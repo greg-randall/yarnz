@@ -57,12 +57,20 @@ soup = BeautifulSoup(f, "html.parser")
 
 #collect the breadcrumbs from the site to figure out what the brand and yarn name are
 bread = soup.findAll("span", attrs={"class": "breadcrumbs__crumb"})
+#bread_links = soup.findAll("span", attrs={"class": "breadcrumbs__crumb"}).findall('a').get('href')
 
 #the format is always like yarn > company > yarn name, so we're getting only the second and third part and adding a dash
 company = f"{bread[1].get_text().strip()} - {bread[2].get_text().strip()}"
+company_url = bread[1].find("a").get('href')
+
+output = {
+    'name' : company,
+    'url'  : company_url,
+    'colorways' : []
+}
 
 if debug:
-    print(f"company: {company}")
+    print(f"company: {company} - company url: {company_url}")
 
 #collect all the colorways squares
 colorways = soup.findAll("div", attrs={"class": "yarn__colorway__preview"})
@@ -135,8 +143,6 @@ for colorway in colorways:
             color = get_primary_color(f"{image_save_name}")
 
         if debug:
-
-
             print(f"pixels {w} {h} ; unique colors: {totalUniqueColors}")
 
         if debug or output_image_with_color:
@@ -151,9 +157,19 @@ for colorway in colorways:
 
         print(f"{i}/{color_count} | {company} - {name} - {link} - #{color}")
 
+        output['colorways'].append({ 'hex' : f"#{color}", 'name' : name, 'direct_url' : link })
+
+
         i+=1
         if debug and i>4:
             break
 
 
-#print(json.dumps(output))
+
+if debug:
+    print(json.dumps(output, indent=4))
+
+
+f = open(f"{company}.json", "w")
+f.write(json.dumps(output, indent=4))
+f.close()
