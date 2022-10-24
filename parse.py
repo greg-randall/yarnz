@@ -5,12 +5,14 @@ from pathlib import Path
 import torch
 from carvekit.api.high import HiInterface
 import json
+import unicodedata
+import re
+import time
+import datetime
 
-
-
+#set debug options
 debug = False
-output_image_with_color = False
-
+output_image_with_transparent_background = False
 
 
 def rgb_to_hex(rgb):
@@ -24,12 +26,12 @@ def get_primary_color(image_name):
 
     if len(colors) > 1:  # make sure we got some actual colors out
         rgb = colors[1].rgb  # typically the second color is the one we want
-
         if (
-            rgb[0] > 240 and rgb[1] > 240 and rgb[2] > 240
+            rgb[0] > 240 
+            and rgb[1] > 240 
+            and rgb[2] > 240
         ):  # if the color is close to white, then we'll pick the other color
             rgb = colors[0].rgb
-
         average = (rgb[0] + rgb[1] + rgb[2]) / 3  # get the average rgb color
         if (
             abs(rgb[0] - average) < 5
@@ -39,137 +41,150 @@ def get_primary_color(image_name):
             rgb = colors[0].rgb
 
         hex = rgb_to_hex(rgb)
+
         return hex
 
+def slugify(value, allow_unicode=False):
+    """
+    Taken from https://github.com/django/django/blob/master/django/utils/text.py
+    Convert to ASCII if 'allow_unicode' is False. Convert spaces or repeated
+    dashes to single dashes. Remove characters that aren't alphanumerics,
+    underscores, or hyphens. Convert to lowercase. Also strip leading and
+    trailing whitespace, dashes, and underscores.
+    """
+    value = str(value)
+    if allow_unicode:
+        value = unicodedata.normalize('NFKC', value)
+    else:
+        value = unicodedata.normalize('NFKD', value).encode('ascii', 'ignore').decode('ascii')
+    value = re.sub(r'[^\w\s-]', '', value.lower())
+    return re.sub(r'[-\s]+', '-', value).strip('-_')
 
+
+#make folder for original jpgs
 os.system("mkdir jpg")
 
 if debug:
     os.system("mkdir png")
-
-os.system(f"cat *.html > combined_html; mkdir htmls; mv *.html htmls/; mv combined_html combined.html")
-
-#open our html file to parse
-f = open("combined.html", "r")
-
-#start up the parser
-soup = BeautifulSoup(f, "html.parser")
-
-#collect the breadcrumbs from the site to figure out what the brand and yarn name are
-bread = soup.findAll("span", attrs={"class": "breadcrumbs__crumb"})
-#bread_links = soup.findAll("span", attrs={"class": "breadcrumbs__crumb"}).findall('a').get('href')
-
-#the format is always like yarn > company > yarn name, so we're getting only the second and third part and adding a dash
-company = f"{bread[1].get_text().strip()} - {bread[2].get_text().strip()}"
-company_url = bread[1].find("a").get('href')
-
-output = {
-    'name' : company,
-    'url'  : company_url,
-    'colorways' : []
-}
-
-if debug:
-    print(f"company: {company} - company url: {company_url}")
-
-#collect all the colorways squares
-colorways = soup.findAll("div", attrs={"class": "yarn__colorway__preview"})
-
-# set up the image segmenter (removes the subject from the background)
-interface = HiInterface(
-    batch_size_seg=1,
-    batch_size_matting=1,
-    device="cuda" if torch.cuda.is_available() else "cpu",
-    seg_mask_size=320,
-    matting_mask_size=2048,
-)
-
-#counter for showing progress
-i = 1
-color_count = len(colorways)
-
-#loop through each colorway
-for colorway in colorways:
-    name = ( #get the colorway's name
-        colorway.find("div", attrs={"class": "yarn__colorway__preview__title"})
-        .get_text()
-        .strip()
-    )
-
-    link = colorway.find("a", href=True) #get the link base
-    link = f"https://www.ravelry.com{link['href']}" #add the domain to the link base
     
-    image = colorway.find("img", src=True)
-    image_og = image["src"]
-    image = image["src"].replace("_small.j", ".j")
-    image_save_name = (
-        image.lower().replace("/", "_").replace(":", "").replace("jpeg", "jpg")
-    )
-    if not image_save_name.endswith(".jpg"):
-        image_save_name = f"{image_save_name}.jpg"
+combined_output = { "yarns": [] }
 
-    os.system(f"wget -q {image} -O {image_save_name}")
-    if os.path.getsize(image_save_name) > 100:
-        # start color extraction
 
-        filename_without_extension = Path(
-            image_save_name
-        ).stem  # get the base filename without extensions -- ie asdf.jpg to asdf
 
-        # run the image segmentation
-        images_without_background = interface([image_save_name])
-        image_without_background = images_without_background[0]
+for filename in os.listdir("."):
+    if filename.endswith('html') and os.path.isfile(filename) and os.path.getsize(filename) > 100:
 
-        color = get_primary_color(
-            image_without_background
-        )  # get the primary color from the segmented image
+        print(f"Begin Parsing {filename}")
 
-        if color is None:  # if we didn't get a color, try re-running but on the original image, not the segmented one
-            color = get_primary_color(f"{image_save_name}")
+        #open our html file to parse
+        f = open(filename, "r")
 
-        # sometimes if there isn't really a subject in the image (ie fully zoomed in picture of yarn), segmentation will return nonsese.
-        # we're going to count the total unique colors, to determine if we're getting nonsense
-        w, h = image_without_background.size
-        uniqueColors = set()
-        for x in range(w):
-            for y in range(h):
-                pixel = image_without_background.getpixel((x, y))
-                uniqueColors.add(pixel)
-        totalUniqueColors = len(uniqueColors)
+        #start up the parser
+        soup = BeautifulSoup(f, "html.parser")
 
-        if (
-            totalUniqueColors < 10
-        ):  # if we didn't many unique colors in the segmented file we'll re run on just the raw file
-            color = get_primary_color(f"{image_save_name}")
+        #collect the breadcrumbs from the site to figure out what the brand and yarn name are
+        bread = soup.findAll("span", attrs={"class": "breadcrumbs__crumb"})
+
+        #bread_links = soup.findAll("span", attrs={"class": "breadcrumbs__crumb"}).findall('a').get('href')
+        #the format is always like yarn > company > yarn name, so we're getting only the second and third part and adding a dash
+        company = f"{bread[1].get_text().strip()} - {bread[2].get_text().strip()}"
+        company_url = bread[1].find("a").get('href')
+        output = {
+            'name' : company,
+            'url'  : company_url,
+            'colorways' : []
+        }
 
         if debug:
-            print(f"pixels {w} {h} ; unique colors: {totalUniqueColors}")
-
-        if debug or output_image_with_color:
-            image_without_background.save(f"{filename_without_extension}.png")
-            os.system(f"convert {filename_without_extension}.png -resize 500x500 -background '#{color}' label:'#{color}' -gravity Center -append {filename_without_extension}-color.png")
-
+            print(f"company: {company} - company url: {company_url}")
+            
+        #collect all the colorways squares
+        colorways = soup.findAll("div", attrs={"class": "yarn__colorway__preview"})
+        # set up the image segmenter (removes the subject from the background)
+        interface = HiInterface(
+            batch_size_seg=1,
+            batch_size_matting=1,
+            device="cuda" if torch.cuda.is_available() else "cpu",
+            seg_mask_size=320,
+            matting_mask_size=2048,
+        )
+        #counter for showing progress
+        i = 1
+        color_count = len(colorways)
+        #loop through each colorway
+        for colorway in colorways:
+            name = ( #get the colorway's name
+                colorway.find("div", attrs={"class": "yarn__colorway__preview__title"})
+                .get_text()
+                .strip()
+            )
+            link = colorway.find("a", href=True) #get the link base
+            link = f"https://www.ravelry.com{link['href']}" #add the domain to the link base
+            
+            image = colorway.find("img", src=True)
+            image_og = image["src"]
+            image = image["src"].replace("_small.j", ".j")
+            image_save_name = (
+                image.lower().replace("/", "_").replace(":", "").replace("jpeg", "jpg")
+            )
+            if not image_save_name.endswith(".jpg"):
+                image_save_name = f"{image_save_name}.jpg"
+            os.system(f"wget -q {image} -O {image_save_name}")
+            if os.path.getsize(image_save_name) > 100:
+                # start color extraction
+                filename_without_extension = Path(
+                    image_save_name
+                ).stem  # get the base filename without extensions -- ie asdf.jpg to asdf
+                # run the image segmentation
+                images_without_background = interface([image_save_name])
+                image_without_background = images_without_background[0]
+                color = get_primary_color(
+                    image_without_background
+                )  # get the primary color from the segmented image
+                if color is None:  # if we didn't get a color, try re-running but on the original image, not the segmented one
+                    color = get_primary_color(f"{image_save_name}")
+                # sometimes if there isn't really a subject in the image (ie fully zoomed in picture of yarn), segmentation will return nonsese.
+                # we're going to count the total unique colors, to determine if we're getting nonsense
+                w, h = image_without_background.size
+                uniqueColors = set()
+                for x in range(w):
+                    for y in range(h):
+                        pixel = image_without_background.getpixel((x, y))
+                        uniqueColors.add(pixel)
+                totalUniqueColors = len(uniqueColors)
+                if (
+                    totalUniqueColors < 10
+                ):  # if we didn't many unique colors in the segmented file we'll re run on just the raw file
+                    color = get_primary_color(f"{image_save_name}")
+                if debug:
+                    print(f"pixels {w} {h} ; unique colors: {totalUniqueColors}")
+                if debug or output_image_with_transparent_background:
+                    image_without_background.save(f"{filename_without_extension}.png")
+                    os.system(f"convert {filename_without_extension}.png -resize 500x500 -background '#{color}' label:'#{color}' -gravity Center -append {filename_without_extension}-color.png")
+                if debug:
+                    os.system(f"mv {filename_without_extension}.png png/")
+                os.system(f"convert {image_save_name} -resize 500x500 -background '#{color}' label:'#{color}' -gravity Center -append {filename_without_extension}-color.jpg")
+                os.system(f"mv {image_save_name} jpg/")
+                print(f"{i}/{color_count} | {company} - {name} - {link} - #{color}")
+                output['colorways'].append({ 'hex' : f"#{color}", 'name' : name, 'direct_url' : link })
+                i+=1
+                if debug and i>4:
+                    break
         if debug:
-            os.system(f"mv {filename_without_extension}.png png/")
+            print(json.dumps(output, indent=4))
+            #output single subitem
+            f = open(f"{slugify(company)}.json", "w")
+            f.write(json.dumps(output, indent=4))
+            f.close()
 
-        os.system(f"convert {image_save_name} -resize 500x500 -background '#{color}' label:'#{color}' -gravity Center -append {filename_without_extension}-color.jpg")
-        os.system(f"mv {image_save_name} jpg/")
+        combined_output['yarns'].append(output)
 
-        print(f"{i}/{color_count} | {company} - {name} - {link} - #{color}")
+        print("-----------------------------------------------------------------------------------------------------------------------")
 
-        output['colorways'].append({ 'hex' : f"#{color}", 'name' : name, 'direct_url' : link })
-
-
-        i+=1
-        if debug and i>4:
-            break
-
-
-
-if debug:
-    print(json.dumps(output, indent=4))
-
-
-f = open(f"{company}.json", "w")
-f.write(json.dumps(output, indent=4))
+presentDate = datetime.datetime.now()
+unix_timestamp = datetime.datetime.timestamp(presentDate)*1000
+#output json to file
+print(f"Writing Output {unix_timestamp}-full-output.json")
+f = open(f"{unix_timestamp}-full-output.json", "w")
+f.write(json.dumps(combined_output, indent=4))
 f.close()
