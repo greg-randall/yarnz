@@ -13,6 +13,7 @@ import datetime
 #set debug options
 debug = False
 output_image_with_transparent_background = False
+output_intermediate_jsons = True
 
 
 def rgb_to_hex(rgb):
@@ -170,7 +171,7 @@ for filename in os.listdir("."):
                 i+=1
                 if debug and i>4:
                     break
-        if debug:
+        if debug or output_intermediate_jsons:
             print(json.dumps(output, indent=4))
             #output single subitem
             f = open(f"{slugify(company)}.json", "w")
